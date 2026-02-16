@@ -1,0 +1,316 @@
+import streamlit as st
+from google import genai
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+
+import React, { useState, useEffect } from 'react';
+import { DemoMode } from './types';
+import Sidebar from './components/Sidebar';
+import ChatDemo from './components/ChatDemo';
+import ImageDemo from './components/ImageDemo';
+import VideoDemo from './components/VideoDemo';
+import LiveDemo from './components/LiveDemo';
+import SpeechDemo from './components/SpeechDemo';
+
+const App: React.FC = () => {
+  const [activeMode, setActiveMode] = useState<DemoMode>(DemoMode.CHAT);
+
+  const renderDemo = () => {
+    switch (activeMode) {
+      case DemoMode.CHAT:
+        return <ChatDemo />;
+      case DemoMode.IMAGE:
+        return <ImageDemo />;
+      case DemoMode.VIDEO:
+        return <VideoDemo />;
+      case DemoMode.LIVE:
+        return <LiveDemo />;
+      case DemoMode.SPEECH:
+        return <SpeechDemo />;
+      default:
+        return <ChatDemo />;
+    }
+  };
+
+  return (
+    <div className="flex h-screen bg-slate-900 text-slate-100 overflow-hidden">
+      <Sidebar activeMode={activeMode} onSelectMode={setActiveMode} />
+      <main className="flex-1 overflow-y-auto bg-slate-900 relative">
+        <div className="max-w-6xl mx-auto p-4 md:p-8 h-full">
+          {renderDemo()}
+        </div>
+      </main>
+    </div>
+  );
+};
+
+export 
+
+import React, { useState, useRef, useEffect } from 'react';
+import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
+import { ChatMessage } from '../types';
+
+// Definición de Herramientas (Tools)
+const vegetationFunctionDeclaration: FunctionDeclaration = {
+  name: 'obtener_indice_vegetacion',
+  parameters: {
+    type: Type.OBJECT,
+    description: 'Obtiene el Índice de Vegetación (NDVI) satelital para evaluar salud de biomasa.',
+    properties: {
+      lat: { type: Type.NUMBER },
+      lon: { type: Type.NUMBER },
+    },
+    required: ['lat', 'lon'],
+  },
+};
+
+const fireRiskFunctionDeclaration: FunctionDeclaration = {
+  name: 'predecir_riesgo_incendio',
+  parameters: {
+    type: Type.OBJECT,
+    description: 'Calcula el riesgo de incendio basado en variables meteorológicas de CONAFOR.',
+    properties: {
+      temp: { type: Type.NUMBER },
+      humedad: { type: Type.NUMBER },
+      viento: { type: Type.NUMBER },
+    },
+    required: ['temp', 'humedad', 'viento'],
+  },
+};
+
+const biosecurityFunctionDeclaration: FunctionDeclaration = {
+  name: 'consultar_estado_bioseguridad',
+  parameters: {
+    type: Type.OBJECT,
+    description: 'Consulta el estatus de bioseguridad, sequía, fragmentación y presencia de especies NOM-059.',
+    properties: {
+      estado: { type: Type.STRING },
+      municipio: { type: Type.STRING },
+    },
+    required: ['estado', 'municipio'],
+  },
+};
+
+const REPOSITORY_SYSTEM_INSTRUCTION = `Eres un Agente de Inteligencia Ambiental especializado en la República Mexicana. 
+Tu misión es predecir la pérdida de ecosistemas combinando datos crudos con un "sentido común" basado en ecología de paisajes y normativa mexicana.
+
+CRITERIOS DE RAZONAMIENTO (SENTIDO COMÚN):
+1. Prioridad de Protección: Cualquier área dentro de una ANP (Área Natural Protegida) o con presencia de especies en la NOM-059 tiene un factor de vulnerabilidad multiplicador de x2.
+2. Lógica de Degradación (Efecto Isla): Si detectas que un parche de bosque tiene una fragmentación alta (rodeado de carreteras o zonas urbanas), predice una pérdida de biodiversidad mayor a la que indican los datos de cobertura vegetal por sí solos.
+3. Correlación Fuego-Agricultura: En regiones como Michoacán, Jalisco o Chiapas, si un incendio ocurre en temporada de estiaje (febrero-mayo) cerca de zonas agrícolas, clasifica el riesgo de "Cambio de Uso de Suelo Irreversible" como ALTO.
+4. Categorización de Sequía (Monitor de México):
+   - D0-D1: Riesgo Moderado (Estrés hídrico).
+   - D2-D3: Riesgo Severo (Pérdida de biomasa y muerte de plántulas).
+   - D4: Riesgo de Colapso Ecosistémico.
+
+FORMATO DE SALIDA (INFORME OBLIGATORIO):
+Cada vez que analices una zona, estructura tu respuesta así:
+- Diagnóstico de Situación: (Resumen del estado actual).
+- Índice de Riesgo Estimado: (Escala 0-100%).
+- Justificación Ecológica: (Por qué llegaste a esa conclusión usando el sentido común).
+- Acciones de Mitigación Sugeridas: (Basadas en leyes mexicanas como la LGDFS o LGEEPA).
+
+Responde siempre en español técnico de México con tono institucional.`;
+
+const ChatDemo: React.FC = () => {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('Central SEMARNAT Activa');
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  const simulateBiosecurity = (estado: string) => {
+    const e = estado.toLowerCase();
+    const isNorte = ['sonora', 'chihuahua', 'coahuila'].some(s => e.includes(s));
+    const isCentroCritico = ['michoacan', 'jalisco', 'chiapas'].some(s => e.includes(s));
+    
+    return {
+      categoria_sequia: isNorte ? 'D3' : 'D1',
+      indice_fragmentacion: isCentroCritico ? 0.85 : 0.3, 
+      presencia_NOM059: Math.random() > 0.4,
+      es_anp: Math.random() > 0.5,
+      mes_actual: new Date().getMonth() + 1,
+      cercania_zona_agricola: isCentroCritico,
+      temperatura: isNorte ? 38 : 28
+    };
+  };
+
+  const handleSend = async () => {
+    if (!input.trim() || isLoading) return;
+    setMessages(prev => [...prev, { role: 'user', text: input }]);
+    setInput('');
+    setIsLoading(true);
+    setStatusMessage('Procesando datos federados...');
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      let response = await ai.models.generateContent({
+        model: 'gemini-3-pro-preview',
+        contents: input,
+        config: {
+          systemInstruction: REPOSITORY_SYSTEM_INSTRUCTION,
+          tools: [{ googleSearch: {} }, { functionDeclarations: [vegetationFunctionDeclaration, fireRiskFunctionDeclaration, biosecurityFunctionDeclaration] }]
+        },
+      });
+
+      let currentHistory: any[] = [{ role: 'user', parts: [{ text: input }] }, { role: 'model', parts: response.candidates[0].content.parts }];
+      let iteration = 0;
+
+      while (response.functionCalls && response.functionCalls.length > 0 && iteration < 4) {
+        const toolResponses = [];
+        for (const fc of response.functionCalls) {
+          if (fc.name === 'consultar_estado_bioseguridad') {
+            setStatusMessage(`Analizando vulnerabilidad en ${fc.args.estado}...`);
+            toolResponses.push({ functionResponse: { id: fc.id, name: fc.name, response: simulateBiosecurity(fc.args.estado as string) } });
+          } else if (fc.name === 'obtener_indice_vegetacion') {
+            toolResponses.push({ functionResponse: { id: fc.id, name: fc.name, response: { ndvi: (0.32).toFixed(2) } } });
+          } else if (fc.name === 'predecir_riesgo_incendio') {
+            toolResponses.push({ functionResponse: { id: fc.id, name: fc.name, response: { riesgo: 'Crítico', factor: 'Estiaje' } } });
+          }
+        }
+        currentHistory.push({ role: 'user', parts: toolResponses });
+        response = await ai.models.generateContent({
+          model: 'gemini-3-pro-preview',
+          contents: currentHistory,
+          config: { systemInstruction: REPOSITORY_SYSTEM_INSTRUCTION }
+        });
+        currentHistory.push({ role: 'model', parts: response.candidates[0].content.parts });
+        iteration++;
+      }
+
+      setMessages(prev => [...prev, {
+        role: 'model',
+        text: response.text || 'Informe generado.',
+        links: response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((c: any) => ({
+          title: c.web?.title || 'Fuente Federal',
+          uri: c.web?.uri || '#'
+        }))
+      }]);
+    } catch (error: any) {
+      setMessages(prev => [...prev, { role: 'model', text: `Error de Sistema: ${error.message}` }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full bg-[#0a1a15] rounded-3xl border border-[#98984a]/20 overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.5)]">
+      <div className="p-6 bg-[#0c231e] border-b border-[#98984a]/20 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#98984a] to-[#7a7a3a] flex items-center justify-center text-2xl shadow-lg">🦅</div>
+          <div>
+            <h2 className="text-xl font-bold text-white tracking-tight">Agente de Inteligencia Ambiental</h2>
+            <p className="text-[10px] text-[#98984a] font-black uppercase tracking-[0.2em]">NODO DE BIOSEGURIDAD • MÉXICO</p>
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <div className="text-right">
+            <p className="text-[8px] text-[#98984a] font-bold uppercase">Monitor Sequía</p>
+            <p className="text-[10px] text-emerald-400 font-mono">ACTIVO (CONAGUA)</p>
+          </div>
+          <div className="text-right border-l border-[#98984a]/20 pl-4">
+            <p className="text-[8px] text-[#98984a] font-bold uppercase">Estatus NOM-059</p>
+            <p className="text-[10px] text-emerald-400 font-mono">ACTUALIZADO</p>
+          </div>
+        </div>
+      </div>
+
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]">
+        {messages.length === 0 && (
+          <div className="h-full flex flex-col items-center justify-center">
+            <div className="w-24 h-24 mb-6 relative">
+              <div className="absolute inset-0 bg-emerald-500/10 rounded-full animate-ping"></div>
+              <div className="relative z-10 w-full h-full flex items-center justify-center text-5xl">🌿</div>
+            </div>
+            <h3 className="text-[#98984a] font-bold uppercase tracking-widest text-sm mb-4">Protocolo de Análisis Crítico</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-w-2xl w-full">
+              {[
+                'Análisis Michoacán: Riesgo en zona de aguacate',
+                'Estatus hídrico D3/D4 en Sonora y riesgo ANP',
+                'Reporte de fragmentación en Selva Lacandona',
+                'Evaluación NOM-059 en la Reserva de la Biosfera'
+              ].map(s => (
+                <button key={s} onClick={() => setInput(s)} className="p-4 bg-[#0c231e] border border-[#98984a]/20 rounded-2xl text-left text-xs text-emerald-100 hover:border-emerald-500 transition-all shadow-md">
+                  <span className="text-emerald-500 mr-2">▶</span> {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[85%] p-6 rounded-3xl shadow-xl border ${
+              msg.role === 'user' 
+                ? 'bg-[#1a4d44] border-[#98984a]/30 text-white rounded-tr-none' 
+                : 'bg-[#0c231e] border-[#98984a]/10 text-slate-100 rounded-tl-none'
+            }`}>
+              <div className="text-[9px] font-bold uppercase tracking-widest mb-3 opacity-50 flex items-center gap-2">
+                {msg.role === 'user' ? '👤 AGENTE DE CAMPO' : '🤖 CENTRAL DE INTELIGENCIA'}
+                <div className="flex-1 h-px bg-[#98984a]/10"></div>
+              </div>
+              <div className="text-sm leading-relaxed whitespace-pre-wrap">{msg.text}</div>
+              {msg.links && msg.links.length > 0 && (
+                <div className="mt-6 pt-4 border-t border-[#98984a]/10 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {msg.links.map((link, idx) => (
+                    <a key={idx} href={link.uri} target="_blank" rel="noreferrer" className="text-[9px] bg-[#0a1a15] p-2 rounded-lg border border-[#98984a]/20 text-emerald-400 hover:bg-emerald-900/20 transition-all truncate">
+                      🏛️ {link.title}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-[#0c231e] p-6 rounded-3xl rounded-tl-none border border-emerald-500/20 shadow-2xl w-full max-w-sm">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-2 h-2 bg-amber-500 rounded-full animate-ping"></div>
+                <span className="text-[10px] text-[#98984a] font-mono font-bold uppercase tracking-widest">{statusMessage}</span>
+              </div>
+              <div className="space-y-2">
+                <div className="h-1 bg-emerald-900/50 rounded-full overflow-hidden">
+                  <div className="h-full bg-emerald-500 w-1/3 animate-[loading_1.5s_infinite]"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="p-6 bg-[#0c231e] border-t border-[#98984a]/20">
+        <div className="flex gap-3 bg-[#0a1a15] p-2 rounded-2xl border border-[#98984a]/20 shadow-inner">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            placeholder="Analice una región o reporte riesgo de bioseguridad..."
+            className="flex-1 bg-transparent px-4 py-3 text-sm text-emerald-50 focus:outline-none placeholder:text-[#98984a]/30"
+          />
+          <button 
+            onClick={handleSend} 
+            disabled={isLoading || !input.trim()} 
+            className="bg-[#98984a] hover:bg-[#b8b86a] text-[#0c231e] px-8 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-lg active:scale-95 disabled:opacity-30"
+          >
+            {isLoading ? 'ANALIZANDO' : 'INICIAR ANÁLISIS'}
+          </button>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes loading {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(300%); }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export 
